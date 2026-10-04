@@ -1,0 +1,83 @@
+"""Run: python tests/browser_smoke.py /path/to/lexburner-v0.2-play.html.
+Uses set_content: this runner's Chromium policy blocks navigation URLs.
+This is not a file:// compatibility test. Requires Python Playwright + Chromium.
+"""
+from pathlib import Path
+from playwright.sync_api import sync_playwright
+import argparse,json,shutil
+parser=argparse.ArgumentParser()
+parser.add_argument("bundle",type=Path)
+parser.add_argument("--browser",default=shutil.which("chromium") or shutil.which("google-chrome"))
+parser.add_argument("--output-dir",type=Path,default=Path("artifacts"))
+args=parser.parse_args();args.output_dir.mkdir(parents=True,exist_ok=True)
+bundle=args.bundle
+results=[]
+def check(name,value):
+ results.append({'name':name,'passed':bool(value)})
+ assert value,name
+with sync_playwright() as p:
+ b=p.chromium.launch(executable_path=args.browser,headless=True,args=['--no-sandbox'])
+ page=b.new_page(viewport={'width':1600,'height':900},device_scale_factor=1)
+ errors=[];requests=[]
+ page.on('pageerror',lambda e:errors.append(str(e)));page.on('request',lambda r:requests.append(r.url))
+ page.set_content(bundle.read_text(encoding='utf-8'));page.wait_for_timeout(200)
+ check('Main menu and four entries',page.locator('#startBtn').is_visible() and page.locator('#tutorialBtn').is_visible())
+ check('No vertical or horizontal page overflow',page.evaluate('document.documentElement.scrollWidth<=innerWidth&&document.documentElement.scrollHeight<=innerHeight'))
+ page.click('#startBtn');page.select_option('#p2mode','dummy');page.click('#fightBtn')
+ page.wait_for_function('window.__LEX.running&&window.__LEX.intro===0',timeout=12000)
+ check('All 81 original clips decoded',page.evaluate('__LEX.bank.buffers.size===81'))
+ check('Audio context unlocked',page.evaluate('__LEX.bank.ctx.state==="running"'))
+ # Set positions, but submit attacks using the physical keyboard, not world.start.
+ page.evaluate('Object.assign(__LEX.world.fighters[0],{x:490});Object.assign(__LEX.world.fighters[1],{x:625});')
+ page.keyboard.press('KeyJ');page.wait_for_function('__LEX.world.fighters[0].combo>=1')
+ page.keyboard.press('KeyJ');page.wait_for_function('__LEX.world.fighters[0].combo>=2')
+ page.keyboard.press('KeyK');page.wait_for_function('__LEX.world.fighters[0].combo>=3')
+ check('Physical J → J → K confirms a three-hit combo',page.evaluate('__LEX.world.fighters[0].combo===3'))
+ check('Combo causes launch and independent rage gain',page.evaluate('__LEX.world.fighters[1].vh>0&&__LEX.world.fighters[0].rage>0'))
+ page.screenshot(path=str(args.output_dir/'lexburner-v0.2-combo.png'))
+ page.click('#pauseBtn');check('Visible pause overlay',page.locator('#paused').is_visible())
+ before=page.evaluate('__LEX.snapshot()');page.wait_for_timeout(250);after=page.evaluate('__LEX.snapshot()')
+ check('Pause freezes simulation and timer',before['frame']==after['frame'] and before['time']==after['time'])
+ page.locator('#pauseVolume').fill('0.2');page.locator('#pauseVolume').dispatch_event('input')
+ check('Volume slider applies master gain',page.evaluate('Math.abs(__LEX.bank.gain.gain.value-0.2)<0.001'))
+ page.screenshot(path=str(args.output_dir/'lexburner-v0.2-pause.png'))
+ page.click('#resumeBtn');page.keyboard.press('Escape');check('Escape pauses',page.evaluate('__LEX.paused'))
+ page.keyboard.press('Escape');check('Escape resumes',page.evaluate('!__LEX.paused'))
+ page.keyboard.down('KeyD');page.wait_for_timeout(50);page.evaluate('window.dispatchEvent(new Event("blur"))')
+ check('Blur pauses and clears held keys',page.evaluate('__LEX.paused&&__LEX.keys.every(k=>k.held.size===0)'))
+ page.keyboard.up('KeyD');page.click('#resumeBtn');page.click('#settingsBtn')
+ check('Settings interrupts the game safely',page.evaluate('__LEX.paused') and page.locator('#settings').is_visible())
+ page.locator('#voiceVolume').fill('0.4');page.locator('#voiceVolume').dispatch_event('input')
+ page.locator('#sfxVolume').fill('0.3');page.locator('#sfxVolume').dispatch_event('input')
+ check('Independent voice and SFX buses',page.evaluate('Math.abs(__LEX.bank.voiceGain.gain.value-.4)<.001&&Math.abs(__LEX.bank.sfxGain.gain.value-.3)<.001'))
+ page.check('#mute');check('Mute sets master gain to zero',page.evaluate('__LEX.bank.gain.gain.value===0'))
+ page.uncheck('#mute');page.click('[data-close="settings"]');page.click('#resumeBtn')
+ page.keyboard.press('KeyM');check('M toggles mute',page.evaluate('__LEX.bank.muted'));page.keyboard.press('KeyM')
+ # Cut-in triggered through JKL; sufficient rage is a fixture rather than claimed earned by keys.
+ page.evaluate('let w=__LEX.world;w.freeze=0;for(let i=0;i<2;i++)Object.assign(w.fighters[i],{x:i?770:400,h:0,vh:0,stun:0,move:null,buffer:null,rage:i?0:300,hp:100,cd:{}});')
+ for code in ['KeyJ','KeyK','KeyL']:page.keyboard.down(code)
+ page.wait_for_function('__LEX.world.cinematic>0')
+ check('JKL spends all three rage stocks',page.evaluate('__LEX.world.fighters[0].rage===0'))
+ for code in ['KeyJ','KeyK','KeyL']:page.keyboard.up(code)
+ page.wait_for_timeout(150);page.screenshot(path=str(args.output_dir/'lexburner-v0.2-cutin.png'))
+ page.wait_for_function('__LEX.world.fighters[0].move?.age>=28',timeout=8000)
+ page.screenshot(path=str(args.output_dir/'lexburner-v0.2-ultimate.png'))
+ check('Ultimate produces hits after cut-in',page.evaluate('__LEX.world.fighters[1].hp<100'))
+ page.evaluate('__LEX.menu()');page.click('#startBtn');page.select_option('#p2mode','human');page.click('#fightBtn');page.wait_for_function('__LEX.intro===0')
+ oldx=page.evaluate('__LEX.world.fighters.map(f=>f.x)')
+ page.keyboard.down('KeyD');page.keyboard.down('ArrowLeft');page.wait_for_timeout(220);page.keyboard.up('KeyD');page.keyboard.up('ArrowLeft')
+ newx=page.evaluate('__LEX.world.fighters.map(f=>f.x)')
+ check('Both seats move on separate keyboard maps',newx[0]>oldx[0] and newx[1]<oldx[1])
+ page.keyboard.press('Numpad4');page.wait_for_function('__LEX.world.fighters[1].move?.def.id==="cross"')
+ check('P2 physical numpad casts independent skill',page.evaluate('__LEX.world.fighters[1].lastName==="影分身十字斩"'))
+ page.evaluate('__LEX.menu()');page.click('#soundBtn');check('81 playable library buttons',page.locator('#soundList button').count()==81)
+ page.fill('#soundSearch','燃烧刀');check('Voice search matches exact existing clip',page.locator('#soundList button').count()==1)
+ page.click('#soundList button');check('Voice source created for preview',page.evaluate('__LEX.bank.lanes.has("preview")'))
+ page.click('[data-close="sounds"]');page.wait_for_function('!__LEX.bank.lanes.has("preview")');check('Closing library stops preview',page.evaluate('!__LEX.bank.lanes.has("preview")'))
+ page.set_viewport_size({'width':900,'height':600});page.wait_for_timeout(100)
+ check('Compact viewport has no page overflow',page.evaluate('document.documentElement.scrollWidth<=innerWidth&&document.documentElement.scrollHeight<=innerHeight'))
+ check('No page exceptions',not errors)
+ check('Bundle performs no external network requests',not requests)
+ print(json.dumps({'checks':results,'errors':errors,'requests':requests},ensure_ascii=False,indent=2))
+ (args.output_dir/'browser-report.json').write_text(json.dumps({'checks':results,'errors':errors,'requests':requests},ensure_ascii=False,indent=2))
+ b.close()
