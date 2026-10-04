@@ -74,14 +74,16 @@ class World{
   this.emit('hit',{fighter:b.id,attacker:a.id,guarded,damage,x:b.x,y:GROUND-b.h-85,color:d.color,token});
  }
  step(commands=[{},{}]){
-  this.events=[];if(this.over)return this.events;if(this.freeze>0){this.freeze--;return this.events;}
+  this.events=[];if(this.over)return this.events;
+  // Capture edge-triggered intents even during hit-stop; consume after the freeze.
+  for(const f of this.fighters)if(commands[f.id]?.action)f.buffer={id:commands[f.id].action,ttl:10};
+  if(this.freeze>0){this.freeze--;return this.events;}
   this.frame++;this.time--;
   for(const f of this.fighters){
    const c=commands[f.id]||{},other=this.fighters[1-f.id];
    for(const id of Object.keys(f.cd))f.cd[id]=Math.max(0,f.cd[id]-1);
    f.stun=Math.max(0,f.stun-1);if(!f.stun)f.blocked=false;f.shield=Math.max(0,f.shield-1);f.invul=Math.max(0,f.invul-1);f.energy=clamp(f.energy+.075,0,100);
    if(!f.move&&!f.stun)f.face=Math.sign(other.x-f.x)||f.face;
-   if(c.action)f.buffer={id:c.action,ttl:10};
    if(f.buffer){if(this.start(f,f.buffer.id))f.buffer=null;else if(--f.buffer.ttl<=0)f.buffer=null;}
    f.guard=!!c.guard&&!f.move&&f.h===0&&(!f.stun||f.blocked);f.crouch=!!c.crouch&&!f.move&&f.h===0;
    if(c.jump&&!f.move&&!f.stun&&f.h===0){f.vh=12.4;f.guard=false;}

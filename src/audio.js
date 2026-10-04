@@ -28,7 +28,7 @@ async function unzipAudio(buffer){
  for(let n=0;n<count;n++){
   if(off+46>u.length||v.getUint32(off,true)!==0x02014b50)throw Error('ZIP 目录损坏');
   const flags=v.getUint16(off+8,true),method=v.getUint16(off+10,true),size=v.getUint32(off+20,true),plain=v.getUint32(off+24,true),nl=v.getUint16(off+28,true),el=v.getUint16(off+30,true),cl=v.getUint16(off+32,true),local=v.getUint32(off+42,true);
-  const name=new TextDecoder(flags&2048?'utf-8':'gb18030').decode(u.slice(off+46,off+46+nl));off+=46+nl+el+cl;
+  const name=zipName(u.slice(off+46,off+46+nl),u.slice(off+46+nl,off+46+nl+el),flags);off+=46+nl+el+cl;
   if(!/\.(wav|mp3|ogg|m4a)$/i.test(name))continue;
   if(flags&1)throw Error('不支持加密 ZIP');if(plain>16*1024*1024||(total+=plain)>128*1024*1024)throw Error('解压大小超限');
   if(local+30>u.length||v.getUint32(local,true)!==0x04034b50)throw Error('ZIP 文件头损坏');
@@ -44,5 +44,16 @@ async function unzipAudio(buffer){
  }
  return out;
 }
-root.LexAudio={AudioBank,unzipAudio};
+// Some Windows ZIPs contain UTF-8 names with bit 11 unset, plus Info-ZIP 0x7075.
+function zipName(raw,extra,flags){
+ const utf8=new TextDecoder('utf-8',{fatal:true});
+ if(flags&2048)return utf8.decode(raw);
+ const view=new DataView(extra.buffer,extra.byteOffset,extra.byteLength);
+ for(let p=0;p+4<=extra.length;){const id=view.getUint16(p,true),n=view.getUint16(p+2,true);if(p+4+n>extra.length)break;
+  if(id===0x7075&&n>=5&&extra[p+4]===1){try{return utf8.decode(extra.slice(p+9,p+4+n));}catch{}}
+  p+=4+n;
+ }
+ try{return utf8.decode(raw);}catch{return new TextDecoder('gb18030').decode(raw);}
+}
+root.LexAudio={AudioBank,unzipAudio,zipName};
 })(window);

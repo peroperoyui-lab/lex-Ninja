@@ -13,7 +13,10 @@ def build(audio_zip=None,output=None):
             for i in z.infolist():
                 name=i.filename
                 if not i.flag_bits&2048:
-                    try:name=name.encode('cp437').decode('gb18030')
+                    try:
+                        raw_name=name.encode('cp437')
+                        try:name=raw_name.decode('utf-8')
+                        except UnicodeDecodeError:name=raw_name.decode('gb18030')
                     except (UnicodeError,LookupError):pass
                 if not name.lower().endswith(('.wav','.mp3','.ogg','.m4a')):continue
                 total+=i.file_size
@@ -30,7 +33,7 @@ def build(audio_zip=None,output=None):
     html=re.sub(r'<script src="([^"]+)"></script>',script,html)
     out=Path(output) if output else ROOT/'dist'/'lexburner-play.html'
     out.parent.mkdir(parents=True,exist_ok=True);out.write_text(html,encoding='utf-8')
-    (out.parent/'audio-manifest.json').write_text(json.dumps(manifest,ensure_ascii=False,indent=2),encoding='utf-8')
+    out.with_name(out.stem+'-audio-manifest.json').write_text(json.dumps(manifest,ensure_ascii=False,indent=2),encoding='utf-8')
     print(f'Built {out}: {out.stat().st_size:,} bytes; {len(audio)} embedded audio clips')
 if __name__=='__main__':
     p=argparse.ArgumentParser();p.add_argument('--audio-zip',type=Path);p.add_argument('--output',type=Path);a=p.parse_args();build(a.audio_zip,a.output)
