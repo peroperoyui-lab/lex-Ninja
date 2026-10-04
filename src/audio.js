@@ -2,15 +2,34 @@
 (function(root){
 'use strict';
 class AudioBank{
- constructor(){this.ctx=null;this.buffers=new Map();this.lanes=new Map();this.volume=.6;this.muted=false;this.errors=[];}
- async unlock(){if(!this.ctx){this.ctx=new (window.AudioContext||window.webkitAudioContext)();this.gain=this.ctx.createGain();this.gain.gain.value=this.volume;this.compressor=this.ctx.createDynamicsCompressor();this.compressor.threshold.value=-12;this.gain.connect(this.compressor);this.compressor.connect(this.ctx.destination);}if(this.ctx.state==='suspended')await this.ctx.resume();}
- setVolume(value){this.volume=value;if(this.gain)this.gain.gain.value=this.muted?0:value;}
+ constructor(){this.ctx=null;this.buffers=new Map();this.lanes=new Map();this.sources=new Set();this.volume=.65;this.voiceVolume=.9;this.sfxVolume=.7;this.muted=false;this.errors=[];}
+ async unlock(){
+  if(!this.ctx){
+   this.ctx=new (window.AudioContext||window.webkitAudioContext)();this.gain=this.ctx.createGain();this.voiceGain=this.ctx.createGain();this.sfxGain=this.ctx.createGain();
+   this.compressor=this.ctx.createDynamicsCompressor();this.compressor.threshold.value=-12;this.compressor.ratio.value=8;
+   this.voiceGain.connect(this.gain);this.sfxGain.connect(this.gain);this.gain.connect(this.compressor);this.compressor.connect(this.ctx.destination);this.applyLevels();
+  }
+  if(this.ctx.state==='suspended')await this.ctx.resume();
+ }
+ applyLevels(){if(this.gain){this.gain.gain.value=this.muted?0:this.volume;this.voiceGain.gain.value=this.voiceVolume;this.sfxGain.gain.value=this.sfxVolume;}}
+ setVolume(v){this.volume=Math.min(1,Math.max(0,Number(v)||0));this.applyLevels();}
+ setVoiceVolume(v){this.voiceVolume=Math.min(1,Math.max(0,Number(v)||0));this.applyLevels();}
+ setSfxVolume(v){this.sfxVolume=Math.min(1,Math.max(0,Number(v)||0));this.applyLevels();}
+ setMuted(v){this.muted=!!v;this.applyLevels();}
  async add(name,bytes){await this.unlock();const key=name.replace(/^.*[\\/]/,'').replace(/\.(wav|mp3|ogg|m4a)$/i,'');const decoded=await this.ctx.decodeAudioData(bytes.slice(0));if(decoded.duration>60)throw Error('音频超过 60 秒：'+name);this.buffers.set(key,decoded);}
- async embedded(data){await this.unlock();for(const [name,b64]of Object.entries(data||{})){try{const raw=atob(b64),bytes=Uint8Array.from(raw,c=>c.charCodeAt(0));await this.add(name,bytes.buffer);}catch(e){this.errors.push(name+': '+e.message);}}}
+ async embedded(data,onProgress=()=>{}){await this.unlock();const entries=Object.entries(data||{});for(let i=0;i<entries.length;i++){const [name,b64]=entries[i];try{const raw=atob(b64),bytes=Uint8Array.from(raw,c=>c.charCodeAt(0));await this.add(name,bytes.buffer);}catch(e){this.errors.push(name+': '+e.message);}onProgress(i+1,entries.length);}}
  stop(lane){const old=this.lanes.get(lane);if(old){try{old.stop();}catch{}this.lanes.delete(lane);}}
- stopAll(){for(const lane of [...this.lanes.keys()])this.stop(lane);}
- play(name,lane='preview'){if(!this.ctx||this.ctx.state!=='running')return false;const b=this.buffers.get(name);if(!b)return false;this.stop(lane);const s=this.ctx.createBufferSource();s.buffer=b;s.connect(this.gain);s.start();this.lanes.set(lane,s);s.onended=()=>{if(this.lanes.get(lane)===s)this.lanes.delete(lane);};return true;}
- thump(guarded){if(!this.ctx||this.muted)return;const o=this.ctx.createOscillator(),g=this.ctx.createGain(),t=this.ctx.currentTime;o.type=guarded?'triangle':'sine';o.frequency.setValueAtTime(guarded?400:150,t);o.frequency.exponentialRampToValueAtTime(40,t+.1);g.gain.setValueAtTime(.12,t);g.gain.exponentialRampToValueAtTime(.001,t+.12);o.connect(g);g.connect(this.gain);o.start(t);o.stop(t+.13);}
+ stopAll(){for(const lane of [...this.lanes.keys()])this.stop(lane);for(const s of this.sources){try{s.stop();}catch{}}this.sources.clear();}
+ play(name,lane='preview'){if(!this.ctx||this.ctx.state!=='running')return false;const b=this.buffers.get(name);if(!b)return false;this.stop(lane);const s=this.ctx.createBufferSource();s.buffer=b;s.connect(this.voiceGain);s.start();this.lanes.set(lane,s);s.onended=()=>{if(this.lanes.get(lane)===s)this.lanes.delete(lane);};return true;}
+ tone(f0,f1,duration=.16,volume=.15,type='sine',delay=0){
+  if(!this.ctx||this.ctx.state!=='running')return;const o=this.ctx.createOscillator(),g=this.ctx.createGain(),t=this.ctx.currentTime+delay;o.type=type;o.frequency.setValueAtTime(Math.max(20,f0),t);o.frequency.exponentialRampToValueAtTime(Math.max(20,f1),t+duration);g.gain.setValueAtTime(.001,t);g.gain.linearRampToValueAtTime(volume,t+.007);g.gain.exponentialRampToValueAtTime(.001,t+duration);o.connect(g);g.connect(this.sfxGain);this.sources.add(o);o.onended=()=>{this.sources.delete(o);o.disconnect();g.disconnect();};o.start(t);o.stop(t+duration+.02);
+ }
+ noise(duration=.15,volume=.13,cutoff=2400){
+  if(!this.ctx||this.ctx.state!=='running')return;const rate=this.ctx.sampleRate,b=this.ctx.createBuffer(1,Math.ceil(rate*duration),rate),a=b.getChannelData(0);for(let i=0;i<a.length;i++)a[i]=(Math.random()*2-1)*(1-i/a.length);const s=this.ctx.createBufferSource(),g=this.ctx.createGain(),f=this.ctx.createBiquadFilter();s.buffer=b;f.type='lowpass';f.frequency.value=cutoff;g.gain.value=volume;s.connect(f);f.connect(g);g.connect(this.sfxGain);this.sources.add(s);s.onended=()=>{this.sources.delete(s);s.disconnect();g.disconnect();f.disconnect();};s.start();
+ }
+ impact(e){if(e.parry){this.tone(1100,680,.3,.1,'triangle');this.tone(1740,920,.22,.06,'sine');}else if(e.guarded){this.tone(600,160,.13,.14,'triangle');this.noise(.08,.13,4400);}else{this.tone(e.id==='ultimate'?110:180,36,.22,.25);this.noise(.11,.19,3900);this.tone(830,260,.08,.075,'triangle');}}
+ thump(guarded){this.impact({guarded});}
+ cast(id){if(['heavy','cross','flame','dragon'].includes(id)){this.noise(id==='flame'?.22:.13,.09,2100);}if(id==='blink'){this.tone(420,1900,.16,.075,'sine');}if(id==='ultimate'){this.tone(72,38,.65,.3);this.tone(280,780,.55,.05,'sawtooth');}}
  async importFiles(files){await this.unlock();let added=0;const failures=[];
   for(const file of files){try{if(file.size>64*1024*1024)throw Error('文件超过 64 MB');if(/\.zip$/i.test(file.name)){
     const entries=await unzipAudio(await file.arrayBuffer());for(const entry of entries){try{await this.add(entry.name,entry.bytes);added++;}catch(e){failures.push(entry.name+': '+e.message);}}
