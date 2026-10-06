@@ -58,7 +58,6 @@ python scripts/build_portable.py --audio-zip "忍术.zip"
 
 - `src/combat.js`：纯逻辑战斗、指令、AI，可在 Node 下测试。
 - `src/audio.js`：Web Audio、本地 ZIP 解压及音源管理。
-- `src/vfx.js`：仅渲染的招式光效与命中反馈（不含战斗逻辑）。
 - `src/game.js`：程序绘图、界面、固定步长循环。
 - `tests/combat.test.cjs`：规则测试；`node --test tests/*.test.cjs`。
 - `scripts/build_portable.py`：无依赖离线打包及 SHA-256 音源索引。
